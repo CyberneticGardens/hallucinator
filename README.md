@@ -1,4 +1,4 @@
-# halucinator
+# hallucinator
 
 A new Flutter project.
 

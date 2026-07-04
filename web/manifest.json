@@ -1,6 +1,6 @@
 {
-    "name": "halucinator",
-    "short_name": "halucinator",
+    "name": "hallucinator",
+    "short_name": "hallucinator",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",

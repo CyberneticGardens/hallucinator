@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.example" "\0"
-            VALUE "FileDescription", "halucinator" "\0"
+            VALUE "FileDescription", "hallucinator" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "halucinator" "\0"
+            VALUE "InternalName", "hallucinator" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.example. All rights reserved." "\0"
-            VALUE "OriginalFilename", "halucinator.exe" "\0"
-            VALUE "ProductName", "halucinator" "\0"
+            VALUE "OriginalFilename", "hallucinator.exe" "\0"
+            VALUE "ProductName", "hallucinator" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

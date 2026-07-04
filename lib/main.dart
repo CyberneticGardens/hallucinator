@@ -1,4 +1,12 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:http/http.dart' as http;
+import 'package:image/image.dart' as img;
+import 'package:image/src/font/arial_14.dart' as arial14;
+import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   runApp(const MyApp());
@@ -7,116 +15,778 @@ void main() {
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'hallucinator',
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const LocalGenerationPage(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class LocalGenerationPage extends StatefulWidget {
+  const LocalGenerationPage({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<LocalGenerationPage> createState() => _LocalGenerationPageState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class BuiltInLocalGenerator {
+  Map<String, dynamic> buildStableHordeRequest(String topic, int amount) {
+    final normalizedTopic = topic.trim().isEmpty ? 'fantasy landscape' : topic.trim();
+    return {
+      'prompt': normalizedTopic,
+      'params': {
+        'sampler_name': 'k_dpmpp_2m',
+        'cfg_scale': 7.5,
+        'height': 768,
+        'width': 768,
+        'steps': 30,
+        'n': amount,
+      },
+      'nsfw': false,
+      'censor_nsfw': true,
+      'trusted_workers': false,
+      'models': ['Deliberate'],
+    };
+  }
 
-  void _incrementCounter() {
+  Future<List<Uint8List>> fetchPolinationsAiImages(
+    String topic,
+    int amount,
+    void Function(int index, double percent) onProgress,
+  ) async {
+    final images = <Uint8List>[];
+
+    for (int i = 0; i < amount; i++) {
+      onProgress(i, 5);
+
+      final url = Uri.parse(
+        "https://image.pollinations.ai/prompt/"
+        "${Uri.encodeComponent(topic)}"
+        "?width=768"
+        "&height=768"
+        "&seed=${DateTime.now().microsecondsSinceEpoch}"
+      );
+
+      Uint8List? imageBytes;
+
+      for (int attempt = 0; attempt < 10; attempt++) {
+        debugPrint("Attempt ${attempt + 1}: $url");
+
+        try {
+          final response = await http.get(
+            url,
+            headers: {
+              "User-Agent": "Mozilla/5.0",
+            },
+          );
+
+          debugPrint("Status: ${response.statusCode}");
+
+          if (response.statusCode == 200) {
+            imageBytes = response.bodyBytes;
+            break;
+          }
+
+          debugPrint(response.body);
+
+          if (response.statusCode == 429) {
+            debugPrint("Queue full. Waiting...");
+            onProgress(i, 10 + attempt * 8);
+            await Future.delayed(const Duration(seconds: 5));
+            continue;
+          }
+
+          if (response.statusCode == 500) {
+            debugPrint("Server busy. Retrying...");
+            await Future.delayed(const Duration(seconds: 3));
+            continue;
+          }
+
+          break;
+        } catch (e) {
+          debugPrint(e.toString());
+          await Future.delayed(const Duration(seconds: 3));
+        }
+      }
+
+      images.add(imageBytes ?? generatePlaceholderImage(topic));
+      onProgress(i, 100);
+
+      // Give Pollinations time before requesting the next image.
+      if (i < amount - 1) {
+        await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+
+    return images;
+  }
+
+  Future<Map<String, dynamic>> generateArticleWithGroq(
+    String topic,
+    String apiKey,
+  ) async {
+    final prompt = generateArticle(topic);
+
+    final response = await http.post(
+      Uri.parse("https://api.groq.com/openai/v1/chat/completions"),
+      headers: {
+        "Authorization": "Bearer $apiKey",
+        "Content-Type": "application/json",
+      },
+      body: jsonEncode({
+        "model": "llama-3.3-70b-versatile",
+        //"model": "llama-3.1-8b-instant",
+        "messages": [
+          {
+            "role": "user",
+            "content": prompt
+          }
+        ],
+        "temperature": 0.5,
+        "max_tokens": 2500
+      }),
+    );
+
+    if (response.statusCode != 200) {
+      throw Exception(response.body);
+    }
+
+    final json = jsonDecode(response.body);
+
+    final content =
+        json["choices"][0]["message"]["content"] as String;
+
+    return jsonDecode(content);
+  }
+
+  String generateArticle(String topic) {
+    final normalizedTopic =
+        topic.trim().isEmpty ? "local knowledge" : topic.trim();
+
+    return '''
+  You are an experienced Wikipedia editor.
+
+  Write a detailed Wikipedia-style article about "$normalizedTopic".
+
+  Whenever another topic is mentioned that could be explored,
+  surround it with double brackets.
+
+  Example:
+
+  Cybernetic gardens combine [[Robotics]], [[Artificial intelligence]] and [[Hydroponics]].
+
+  Return ONLY valid JSON.
+
+  Use this schema exactly:
+
+  {
+    "title": "string",
+    "sections": [
+      {
+        "heading": "string",
+        "body": "string"
+      }
+    ]
+  }
+
+  Requirements:
+
+  - Choose between 5 and 10 sections.
+  - Choose headings that best suit the subject.
+  - Do NOT force the same headings for every article.
+  - Common headings might include:
+    Overview, History, Characteristics, Design, Biology, Habitat,
+    Architecture, Technology, Culture, Development, Applications,
+    Reception, Legacy, Economy, Politics, Geography, Ecology,
+    Composition, Gameplay, Features, Production, Plot, Cast,
+    Discography, Works, Career, Philosophy, Influence, or Summary.
+  - Use only headings that are appropriate for this topic.
+  - Every section should contain several informative paragraphs.
+  - Include many relevant [[wiki links]] throughout the text.
+  - Do not use Markdown.
+  - Do not use HTML.
+  - Do not use code fences.
+  - Do not explain the JSON.
+  - About 1500 words total.
+  ''';
+  }
+
+  Uint8List generatePlaceholderImage(String topic) {
+    final text = topic.trim().isEmpty ? 'Stars and planets' : topic.trim();
+    final image = img.Image(width: 512, height: 512);
+    img.fill(image, color: img.ColorRgb8(4, 8, 24));
+
+    for (var y = 0; y < image.height; y++) {
+      for (var x = 0; x < image.width; x++) {
+        if ((x * 37 + y * 19) % 97 == 0) {
+          image.setPixelRgba(x, y, 255, 255, 255, 255);
+        }
+      }
+    }
+
+    _drawGlow(image, 110, 130, 70, img.ColorRgb8(255, 214, 102));
+    _drawGlow(image, 370, 170, 95, img.ColorRgb8(110, 140, 255));
+    _drawGlow(image, 310, 340, 70, img.ColorRgb8(255, 120, 120));
+    _drawCircle(image, 120, 130, 34, img.ColorRgb8(255, 240, 200));
+    _drawCircle(image, 370, 170, 52, img.ColorRgb8(96, 120, 255));
+    _drawCircle(image, 310, 340, 34, img.ColorRgb8(255, 90, 90));
+    _drawRing(image, 320, 180, 28, 70, img.ColorRgb8(180, 200, 255));
+    _drawNebula(image);
+
+    img.drawRect(
+      image,
+      x1: 36,
+      y1: 36,
+      x2: 476,
+      y2: 476,
+      color: img.ColorRgb8(255, 255, 255),
+      thickness: 2,
+    );
+
+    img.drawString(
+      image,
+      'Stars and planets',
+      font: arial14.arial14,
+      x: 56,
+      y: 56,
+      color: img.ColorRgb8(248, 250, 252),
+    );
+    img.drawString(
+      image,
+      text,
+      font: arial14.arial14,
+      x: 56,
+      y: 440,
+      color: img.ColorRgb8(226, 232, 240),
+    );
+
+    return Uint8List.fromList(img.encodePng(image));
+  }
+
+  void _drawGlow(img.Image image, int cx, int cy, int radius, img.Color color) {
+    for (var y = cy - radius; y <= cy + radius; y++) {
+      for (var x = cx - radius; x <= cx + radius; x++) {
+        if (x < 0 || y < 0 || x >= image.width || y >= image.height) {
+          continue;
+        }
+        final dx = x - cx;
+        final dy = y - cy;
+        final dist = dx * dx + dy * dy;
+        if (dist <= radius * radius) {
+          final alpha = ((1 - (dist / (radius * radius))) * 0.35).clamp(0.0, 1.0);
+          final current = image.getPixel(x, y);
+          final r = (current.r * (1 - alpha) + color.r * alpha).round();
+          final g = (current.g * (1 - alpha) + color.g * alpha).round();
+          final b = (current.b * (1 - alpha) + color.b * alpha).round();
+          image.setPixelRgba(x, y, r, g, b, 255);
+        }
+      }
+    }
+  }
+
+  void _drawCircle(img.Image image, int cx, int cy, int radius, img.Color color) {
+    for (var y = cy - radius; y <= cy + radius; y++) {
+      for (var x = cx - radius; x <= cx + radius; x++) {
+        if (x < 0 || y < 0 || x >= image.width || y >= image.height) {
+          continue;
+        }
+        final dx = x - cx;
+        final dy = y - cy;
+        if (dx * dx + dy * dy <= radius * radius) {
+          image.setPixelRgba(x, y, color.r, color.g, color.b, 255);
+        }
+      }
+    }
+  }
+
+  void _drawLandscape(img.Image image) {
+    for (var y = 320; y < image.height; y++) {
+      for (var x = 0; x < image.width; x++) {
+        final dx = x - 256;
+        final dy = y - 360;
+        final wave = (dx * 0.006 + dy * 0.008).toDouble();
+        final height = (dy * 0.02 + wave).clamp(-20, 20);
+        if (height > -5) {
+          image.setPixelRgba(x, y, 24, 49, 64, 255);
+        }
+      }
+    }
+  }
+
+  void _drawRing(img.Image image, int cx, int cy, int innerRadius, int outerRadius, img.Color color) {
+    for (var y = cy - outerRadius; y <= cy + outerRadius; y++) {
+      for (var x = cx - outerRadius; x <= cx + outerRadius; x++) {
+        if (x < 0 || y < 0 || x >= image.width || y >= image.height) {
+          continue;
+        }
+        final dx = x - cx;
+        final dy = y - cy;
+        final dist = dx * dx + dy * dy;
+        final isInner = dist <= innerRadius * innerRadius;
+        final isOuter = dist <= outerRadius * outerRadius;
+        if (isOuter && !isInner) {
+          image.setPixelRgba(x, y, color.r, color.g, color.b, 255);
+        }
+      }
+    }
+  }
+
+  void _drawNebula(img.Image image) {
+    _drawGlow(image, 220, 240, 90, img.ColorRgb8(130, 78, 255));
+    _drawGlow(image, 240, 260, 80, img.ColorRgb8(255, 110, 180));
+  }
+}
+
+class ArticleSection {
+  ArticleSection({
+    required this.heading,
+    required this.body,
+    this.image,
+    this.progress = 0,
+  });
+
+  final String heading;
+  final String body;
+  Uint8List? image;
+  double progress;
+}
+
+class _LocalGenerationPageState extends State<LocalGenerationPage> {
+  final TextEditingController _searchController = TextEditingController(
+    text: '',
+  );
+  final TextEditingController _groqKeyController = TextEditingController();
+  final BuiltInLocalGenerator _generator = BuiltInLocalGenerator();
+
+  bool _showGroqKey = false;
+  String _groqApiKey = "";
+
+  bool _isBusy = false;
+  String _statusMessage = 'Search locally to generate a wiki-style page.';
+  String _pageTitle = '';
+  // String _pageBody = '';
+  String _activeQuery = '';
+  List<ArticleSection> _sections = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadGroqKey();
+  }
+
+  Future<void> _loadGroqKey() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    final key = prefs.getString('groqKey') ?? '';
+
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _groqApiKey = key;
+      _groqKeyController.text = key;
     });
+  }
+
+  Future<void> _saveGroqKey(String key) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    await prefs.setString('groqKey', key);
+
+    setState(() {
+      _groqApiKey = key;
+    });
+  }
+
+  Future<void> _searchLocalWeb() async {
+    final query = _searchController.text.trim();
+    if (query.isEmpty) {
+      setState(() => _statusMessage = 'Enter a search term first.');
+      return;
+    }
+
+    setState(() {
+      _isBusy = true;
+      _statusMessage = 'Generating a wiki-style page...';
+      _pageTitle = '';
+      // _pageBody = '';
+      _activeQuery = query;
+    });
+
+    try {
+      final article = await _generator.generateArticleWithGroq(
+        query, 
+        _groqApiKey,
+      );
+      final sections = _sectionsFromJson(article);
+
+      setState(() {
+        _sections = _sectionsFromJson(article);
+      });
+
+      final title = article["title"] as String;
+
+      setState(() {
+        _sections = sections;
+        _pageTitle = title;
+        // _pageBody = article;
+        _statusMessage = 'Generating images...';
+      });
+
+      for (int i = 0; i < _sections.length; i++) {
+        await _loadSectionImage(i, query);
+      }
+    } catch (error) {
+      final fallbackImage = _generator.generatePlaceholderImage(query);
+      setState(() {
+        _pageTitle = _extractTitle(_generator.generateArticle(query), query);
+        _statusMessage = 'Image generation was unavailable, so the app used a local fallback image: $error';
+      });
+    } finally {
+      setState(() => _isBusy = false);
+    }
+  }
+
+  String _extractTitle(String text, String query) {
+    final lines = text.split('\n').where((line) => line.trim().isNotEmpty).toList();
+    for (final line in lines) {
+      if (line.toLowerCase().startsWith('title:')) {
+        return line.replaceFirst(RegExp(r'^title:\s*', caseSensitive: false), '').trim();
+      }
+    }
+
+    return query.split(' ').take(5).join(' ').trim().isNotEmpty
+        ? query.split(' ').take(5).join(' ').trim()
+        : 'Local search result';
+  }
+
+  List<ArticleSection> _sectionsFromJson(
+      Map<String, dynamic> article) {
+    final list = article["sections"] as List;
+
+    return list.map((item) {
+      return ArticleSection(
+        heading: item["heading"],
+        body: item["body"],
+      );
+    }).toList();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _groqKeyController.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
+        title: const Text('hallucinator'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _showSettings,
+          ),
+        ],
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+      body: SafeArea(
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
           children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(24),
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.search),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _searchController,
+                        textInputAction: TextInputAction.search,
+                        onSubmitted: (_) => _searchLocalWeb(),
+                        decoration: const InputDecoration(
+                          hintText: 'Search hallucinator',
+                          border: InputBorder.none,
+                          isDense: true,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      onPressed: _isBusy ? null : _searchLocalWeb,
+                      icon: const Icon(Icons.arrow_forward),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            if (_isBusy)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 16),
+                child: LinearProgressIndicator(),
+              ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (_pageTitle.isEmpty) // && _pageBody.isEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        ),
+                        child: Text(
+                          'Search for a topic to create a Wikipedia-style page with text and illustrations.',
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                      )
+                    else ...[
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(16),
+                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const SizedBox(height: 8),
+                            Text(
+                              _pageTitle,
+                              style: Theme.of(context).textTheme.headlineSmall,
+                            ),
+                            const SizedBox(height: 12),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: _sections.map((section) {
+
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 28),
+
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+
+                                      Text(
+                                      section.heading,
+                                      style: Theme.of(context).textTheme.titleLarge,
+                                    ),
+
+                                    const SizedBox(height: 10),
+
+                                    Row(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      children: [
+
+                                        Expanded(
+                                          // child: Text(section.body),
+                                          child: _buildWikiText(section.body),
+                                        ),
+
+                                        const SizedBox(width: 16),
+
+                                        SizedBox(
+                                          width: 180,
+                                          height: 180,
+                                          child: section.image != null
+                                              ? ClipRRect(
+                                                  borderRadius: BorderRadius.circular(12),
+                                                  child: Image.memory(
+                                                    section.image!,
+                                                    fit: BoxFit.cover,
+                                                  ),
+                                                )
+                                              : Center(
+                                                  child: CircularProgressIndicator(
+                                                    value: section.progress / 100,
+                                                  ),
+                                                ),
+                                        ),
+
+                                      ],
+                                    ),
+
+                                    ],
+                                  ),
+                                );
+
+                              }).toList(),
+                            )
+                          ],
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    Text(
+                      _statusMessage,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+    );
+  }
+  Future<void> _loadSectionImage(int index, String query) async {
+    final images = await _generator.fetchPolinationsAiImages(
+      "${_sections[index].body}",
+      1,
+      (_, percent) {
+        if (!mounted) return;
+
+        setState(() {
+          _sections[index].progress = percent;
+        });
+      },
+    );
+
+    if (!mounted) return;
+
+    setState(() {
+      _sections[index].image = images.first;
+      _sections[index].progress = 100;
+      
+      if (_sections.every((s) => s.image != null)) {
+        _statusMessage = "Finished.";
+      }
+    });
+  }
+
+  Widget _buildWikiText(String text) {
+    final spans = <InlineSpan>[];
+
+    final regex = RegExp(r'\[\[(.*?)\]\]');
+
+    int last = 0;
+
+    for (final match in regex.allMatches(text)) {
+      if (match.start > last) {
+        spans.add(
+          TextSpan(
+            text: text.substring(last, match.start),
+          ),
+        );
+      }
+
+      final topic = match.group(1)!;
+
+      spans.add(
+        TextSpan(
+          text: topic,
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.primary,
+            decoration: TextDecoration.underline,
+          ),
+          recognizer: TapGestureRecognizer()
+            ..onTap = () => _followWikiLink(topic),
+        ),
+      );
+
+      last = match.end;
+    }
+
+    if (last < text.length) {
+      spans.add(
+        TextSpan(
+          text: text.substring(last),
+        ),
+      );
+    }
+
+    return RichText(
+      text: TextSpan(
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: Theme.of(context).colorScheme.onSurface,
+        ),
+        children: spans,
       ),
+    );
+  }
+
+  Future<void> _followWikiLink(String topic) async {
+    _searchController.text = topic;
+    await _searchLocalWeb();
+  }
+
+  void _showSettings() {
+    showDialog(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text("Settings"),
+              content: SizedBox(
+                width: 450,
+                child: TextField(
+                  controller: _groqKeyController,
+                  obscureText: !_showGroqKey,
+                  decoration: InputDecoration(
+                    labelText: "Groq API Key",
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _showGroqKey
+                            ? Icons.visibility_off
+                            : Icons.visibility,
+                      ),
+                      onPressed: () {
+                        setDialogState(() {
+                          _showGroqKey = !_showGroqKey;
+                        });
+                      },
+                    ),
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Navigator.pop(context);
+                  },
+                  child: const Text("Cancel"),
+                ),
+                FilledButton(
+                  onPressed: () async {
+                    await _saveGroqKey(
+                      _groqKeyController.text.trim(),
+                    );
+
+                    if (!mounted) return;
+
+                    Navigator.pop(context);
+
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text("Groq key saved"),
+                      ),
+                    );
+                  },
+                  child: const Text("Save"),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 }

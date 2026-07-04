@@ -1,4 +1,4 @@
-package com.example.halucinator
+package com.example.hallucinator
 
 import io.flutter.embedding.android.FlutterActivity
 
