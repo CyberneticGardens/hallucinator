@@ -140,8 +140,8 @@ class BuiltInLocalGenerator {
         "Content-Type": "application/json",
       },
       body: jsonEncode({
-        "model": "llama-3.3-70b-versatile",
-        //"model": "llama-3.1-8b-instant",
+        //"model": "llama-3.3-70b-versatile",
+        "model": "llama-3.1-8b-instant",
         "messages": [
           {
             "role": "user",
@@ -235,11 +235,14 @@ class BuiltInLocalGenerator {
   - Between 5 and 10 sections.
   - Each section begins with a heading item.
   - Follow each heading with several paragraph items.
-  - Insert image items naturally where an illustration would help.
-  - Usually include 5–10 image items.
-  - Each image prompt should describe exactly what should be illustrated.
   - Include many [[wiki links]].
-  - Do not mention images in paragraph text.
+
+  Image requirements
+
+  - Insert ![[...]] markers inside paragraph text only.
+  - The first paragraph must contain an image marker.
+  - Only add an image marker when it significantly improves understanding.
+  - Each image prompt should describe exactly what should be illustrated.
 
   IMPORTANT
 
