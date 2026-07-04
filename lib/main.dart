@@ -149,6 +149,9 @@ class BuiltInLocalGenerator {
           }
         ],
         "temperature": 0.5,
+        "response_format": {
+          "type": "json_object"
+        },
         "max_tokens": 2500
       }),
     );
@@ -161,8 +164,23 @@ class BuiltInLocalGenerator {
 
     final content =
         json["choices"][0]["message"]["content"] as String;
+        
+    debugPrint("========== GROQ ==========");
+    debugPrint(content);
+    debugPrint("==========================");
 
-    return jsonDecode(content);
+    String cleaned = content.trim();
+
+    final start = cleaned.indexOf('{');
+    final end = cleaned.lastIndexOf('}');
+
+    if (start == -1 || end == -1) {
+      throw Exception("Groq returned no JSON:\n$cleaned");
+    }
+
+    cleaned = cleaned.substring(start, end + 1);
+
+    return jsonDecode(cleaned);
   }
 
   String generateArticle(String topic) {
@@ -181,39 +199,58 @@ class BuiltInLocalGenerator {
 
   Cybernetic gardens combine [[Robotics]], [[Artificial intelligence]] and [[Hydroponics]].
 
+  Images are embedded inside paragraphs.
+
+  Whenever an illustration should appear, insert
+
+  ![[description of image]]
+
+  Example:
+
+  The [[Moon]] is Earth's only natural satellite.
+  ![[A realistic view of the Moon from orbit]]
+  It affects [[Tides]].
+
   Return ONLY valid JSON.
 
   Use this schema exactly:
 
   {
     "title": "string",
-    "sections": [
+    "content": [
       {
-        "heading": "string",
-        "body": "string"
+        "type": "heading",
+        "text": "string"
+      },
+      {
+        "type": "paragraph",
+        "text": "string"
       }
     ]
   }
 
-  Requirements:
+  Requirements
 
-  - Choose between 5 and 10 sections.
-  - Choose headings that best suit the subject.
-  - Do NOT force the same headings for every article.
-  - Common headings might include:
-    Overview, History, Characteristics, Design, Biology, Habitat,
-    Architecture, Technology, Culture, Development, Applications,
-    Reception, Legacy, Economy, Politics, Geography, Ecology,
-    Composition, Gameplay, Features, Production, Plot, Cast,
-    Discography, Works, Career, Philosophy, Influence, or Summary.
-  - Use only headings that are appropriate for this topic.
-  - Every section should contain several informative paragraphs.
-  - Include many relevant [[wiki links]] throughout the text.
-  - Do not use Markdown.
-  - Do not use HTML.
+  - Around 1500 words.
+  - Between 5 and 10 sections.
+  - Each section begins with a heading item.
+  - Follow each heading with several paragraph items.
+  - Insert image items naturally where an illustration would help.
+  - Usually include 5–10 image items.
+  - Each image prompt should describe exactly what should be illustrated.
+  - Include many [[wiki links]].
+  - Do not mention images in paragraph text.
+
+  IMPORTANT
+
+  - Return exactly one JSON object.
+  - The first character must be {
+  - The last character must be }
+  - Do not output Markdown.
+  - Do not output HTML.
   - Do not use code fences.
   - Do not explain the JSON.
-  - About 1500 words total.
+  - Ensure the JSON is valid.
   ''';
   }
 
@@ -343,18 +380,39 @@ class BuiltInLocalGenerator {
   }
 }
 
-class ArticleSection {
-  ArticleSection({
-    required this.heading,
-    required this.body,
+enum ContentType {
+  heading,
+  paragraph,
+}
+
+class ArticleItem {
+  ArticleItem({
+    required this.type,
+    required this.text,
     this.image,
     this.progress = 0,
   });
 
-  final String heading;
-  final String body;
+  final ContentType type;
+
+  // heading text
+  // paragraph text
+  // image prompt
+  final String text;
+
   Uint8List? image;
+
   double progress;
+}
+
+class InlineImage {
+  InlineImage(this.prompt);
+
+  final String prompt;
+
+  Uint8List? image;
+
+  double progress = 0;
 }
 
 class _LocalGenerationPageState extends State<LocalGenerationPage> {
@@ -363,6 +421,7 @@ class _LocalGenerationPageState extends State<LocalGenerationPage> {
   );
   final TextEditingController _groqKeyController = TextEditingController();
   final BuiltInLocalGenerator _generator = BuiltInLocalGenerator();
+  final Map<String, InlineImage> _inlineImages = {};
 
   bool _showGroqKey = false;
   String _groqApiKey = "";
@@ -370,10 +429,9 @@ class _LocalGenerationPageState extends State<LocalGenerationPage> {
   bool _isBusy = false;
   String _statusMessage = 'Search locally to generate a wiki-style page.';
   String _pageTitle = '';
-  // String _pageBody = '';
   String _activeQuery = '';
-  List<ArticleSection> _sections = [];
-
+  List<ArticleItem> _items = [];
+  
   @override
   void initState() {
     super.initState();
@@ -418,27 +476,42 @@ class _LocalGenerationPageState extends State<LocalGenerationPage> {
 
     try {
       final article = await _generator.generateArticleWithGroq(
-        query, 
+        query,
         _groqApiKey,
       );
-      final sections = _sectionsFromJson(article);
 
-      setState(() {
-        _sections = _sectionsFromJson(article);
-      });
-
+      final items = _itemsFromJson(article);
       final title = article["title"] as String;
 
       setState(() {
-        _sections = sections;
+        _items = items;_inlineImages.clear();
+
+        final regex = RegExp(r'!\[\[(.*?)\]\]');
+
+        for (final item in _items) {
+
+          if (item.type != ContentType.paragraph) continue;
+
+          for (final match in regex.allMatches(item.text)) {
+
+            final prompt = match.group(1)!.trim();
+
+            _inlineImages.putIfAbsent(
+              prompt,
+              () => InlineImage(prompt),
+            );
+
+          }
+
+        }
         _pageTitle = title;
-        // _pageBody = article;
         _statusMessage = 'Generating images...';
       });
 
-      for (int i = 0; i < _sections.length; i++) {
-        await _loadSectionImage(i, query);
+      for (final image in _inlineImages.values) {
+        await _loadInlineImage(image);
       }
+      
     } catch (error) {
       final fallbackImage = _generator.generatePlaceholderImage(query);
       setState(() {
@@ -463,15 +536,31 @@ class _LocalGenerationPageState extends State<LocalGenerationPage> {
         : 'Local search result';
   }
 
-  List<ArticleSection> _sectionsFromJson(
+  List<ArticleItem> _itemsFromJson(
       Map<String, dynamic> article) {
-    final list = article["sections"] as List;
+
+    final list = article["content"] as List;
 
     return list.map((item) {
-      return ArticleSection(
-        heading: item["heading"],
-        body: item["body"],
-      );
+
+      switch (item["type"]) {
+
+        case "heading":
+          return ArticleItem(
+            type: ContentType.heading,
+            text: item["text"],
+          );
+
+        case "paragraph":
+          return ArticleItem(
+            type: ContentType.paragraph,
+            text: item["text"],
+          );
+
+        default:
+          throw Exception("Unknown content type");
+      }
+
     }).toList();
   }
 
@@ -563,72 +652,35 @@ class _LocalGenerationPageState extends State<LocalGenerationPage> {
                           color: Theme.of(context).colorScheme.surfaceContainerHighest,
                         ),
                         child: Column(
+
                           crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            const SizedBox(height: 8),
-                            Text(
-                              _pageTitle,
-                              style: Theme.of(context).textTheme.headlineSmall,
-                            ),
-                            const SizedBox(height: 12),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: _sections.map((section) {
+
+                          children: _items.map((item) {
+
+                            switch (item.type) {
+
+                              case ContentType.heading:
 
                                 return Padding(
-                                  padding: const EdgeInsets.only(bottom: 28),
-
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-
-                                      Text(
-                                      section.heading,
-                                      style: Theme.of(context).textTheme.titleLarge,
-                                    ),
-
-                                    const SizedBox(height: 10),
-
-                                    Row(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-
-                                        Expanded(
-                                          // child: Text(section.body),
-                                          child: _buildWikiText(section.body),
-                                        ),
-
-                                        const SizedBox(width: 16),
-
-                                        SizedBox(
-                                          width: 180,
-                                          height: 180,
-                                          child: section.image != null
-                                              ? ClipRRect(
-                                                  borderRadius: BorderRadius.circular(12),
-                                                  child: Image.memory(
-                                                    section.image!,
-                                                    fit: BoxFit.cover,
-                                                  ),
-                                                )
-                                              : Center(
-                                                  child: CircularProgressIndicator(
-                                                    value: section.progress / 100,
-                                                  ),
-                                                ),
-                                        ),
-
-                                      ],
-                                    ),
-
-                                    ],
+                                  padding: const EdgeInsets.only(top: 20),
+                                  child: Text(
+                                    item.text,
+                                    style: Theme.of(context).textTheme.titleLarge,
                                   ),
                                 );
 
-                              }).toList(),
-                            )
-                          ],
-                        ),
+                              case ContentType.paragraph:
+
+                                return Padding(
+                                  padding: const EdgeInsets.symmetric(vertical: 8),
+                                  child: _buildWikiText(item.text),
+                                );
+
+                            }
+
+                          }).toList(),
+
+                        )
                       ),
                     ],
                     const SizedBox(height: 12),
@@ -645,32 +697,122 @@ class _LocalGenerationPageState extends State<LocalGenerationPage> {
       ),
     );
   }
-  Future<void> _loadSectionImage(int index, String query) async {
-    final images = await _generator.fetchPolinationsAiImages(
-      "${_sections[index].body}",
+  Future<void> _loadInlineImage(
+      InlineImage image) async {
+
+    final images =
+        await _generator.fetchPolinationsAiImages(
+
+      image.prompt,
+
       1,
+
       (_, percent) {
+
         if (!mounted) return;
 
         setState(() {
-          _sections[index].progress = percent;
+          image.progress = percent;
         });
+
       },
     );
 
     if (!mounted) return;
 
     setState(() {
-      _sections[index].image = images.first;
-      _sections[index].progress = 100;
-      
-      if (_sections.every((s) => s.image != null)) {
-        _statusMessage = "Finished.";
-      }
+
+      image.image = images.first;
+
+      image.progress = 100;
+
     });
+
   }
 
   Widget _buildWikiText(String text) {
+    final imageRegex = RegExp(r'!\[\[(.*?)\]\]');
+    final match = imageRegex.firstMatch(text);
+
+    // No image in this paragraph
+    if (match == null) {
+      return _buildRichText(text);
+    }
+
+    final prompt = match.group(1)!.trim();
+
+    final before = text.substring(0, match.start).trim();
+    final after = text.substring(match.end).trim();
+
+    final image = _inlineImages[prompt];
+    
+    final Widget imageWidget = image == null
+    ? const SizedBox()
+    : image.image == null
+        ? AspectRatio(
+            aspectRatio: 1,
+            child: Center(
+              child: CircularProgressIndicator(
+                value: image.progress / 100,
+              ),
+            ),
+          )
+        : ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: Image.memory(
+              image.image!,
+              fit: BoxFit.cover,
+            ),
+          );
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+
+              if (before.isNotEmpty)
+                _buildRichText(before),
+
+              if (after.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _buildRichText(after),
+              ],
+            ],
+          ),
+        ),
+
+        const SizedBox(width: 16),
+
+        SizedBox(
+          width: 220,
+          child: image == null
+              ? const SizedBox()
+              : image.image == null
+                  ? AspectRatio(
+                      aspectRatio: 1,
+                      child: Center(
+                        child: CircularProgressIndicator(
+                          value: image.progress / 100,
+                        ),
+                      ),
+                    )
+                  : ClipRRect(
+                      borderRadius: BorderRadius.circular(12),
+                      child: Image.memory(
+                        image.image!,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRichText(String text) {
     final spans = <InlineSpan>[];
 
     final regex = RegExp(r'\[\[(.*?)\]\]');
@@ -714,8 +856,8 @@ class _LocalGenerationPageState extends State<LocalGenerationPage> {
     return RichText(
       text: TextSpan(
         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-          color: Theme.of(context).colorScheme.onSurface,
-        ),
+              color: Theme.of(context).colorScheme.onSurface,
+            ),
         children: spans,
       ),
     );
