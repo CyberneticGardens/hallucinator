@@ -403,57 +403,58 @@ class _LocalGenerationPageState extends State<LocalGenerationPage> {
                 width: 1.0,
               ),
             ),
-            child: image.image == null
-                ? AspectRatio(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (image.image != null)
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                        color: const Color(0xFFEAECF0),
+                        width: 1.0,
+                      ),
+                    ),
+                    child: Image.memory(image.image!, fit: BoxFit.cover),
+                  )
+                else
+                  AspectRatio(
                     aspectRatio: 1,
                     child: Center(child: CircularProgressIndicator()),
-                  )
-                : Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        decoration: BoxDecoration(
-                          border: Border.all(
-                            color: const Color(0xFFEAECF0),
-                            width: 1.0,
-                          ),
-                        ),
-                        child: Image.memory(image.image!, fit: BoxFit.cover),
-                      ),
-                      const SizedBox(height: 5),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 3.0,
-                          vertical: 2.0,
-                        ),
-                        child: Text(
-                          prompt,
-                          maxLines: 3,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 11,
-                            color: Color(0xFF202122),
-                            fontFamily: 'sans-serif',
-                          ),
-                        ),
-                      ),
-                      if (image.error != null) ...[
-                        const SizedBox(height: 4),
-                        const Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 3.0),
-                          child: Text(
-                            'Fallback image used',
-                            style: TextStyle(
-                              fontSize: 10,
-                              color: Colors.grey,
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ],
                   ),
+                const SizedBox(height: 5),
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 3.0,
+                    vertical: 2.0,
+                  ),
+                  child: Text(
+                    prompt,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF202122),
+                      fontFamily: 'sans-serif',
+                    ),
+                  ),
+                ),
+                if (image.error != null) ...[
+                  const SizedBox(height: 4),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 3.0),
+                    child: Text(
+                      'Fallback image used',
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.grey,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
           );
 
     // 2. Return the structural UI row layout
